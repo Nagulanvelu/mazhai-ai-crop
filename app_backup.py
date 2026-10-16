@@ -1,0 +1,924 @@
+﻿from pathlib import Path
+import os
+import base64
+
+import joblib
+import pandas as pd
+import requests
+import streamlit as st
+from dotenv import load_dotenv
+
+# =========================================================
+# CONFIGURATION
+# =========================================================
+ROOT = Path(__file__).resolve().parent
+CROP_MODEL_PATH = ROOT / "models" / "crop_model.pkl"
+YIELD_MODEL_PATH = ROOT / "models" / "yield_model.pkl"
+
+load_dotenv(ROOT / ".env")
+API_KEY = os.getenv("OPENWEATHER_API_KEY")
+KINDWISE_API_KEY = os.getenv("KINDWISE_API_KEY")
+
+st.set_page_config(
+    page_title="Mazhai AI Crop",
+    page_icon="🌧️",
+    layout="wide",
+)
+
+# =========================================================
+# VISUAL DESIGN: FARM BACKGROUNDS AND CARDS
+# =========================================================
+st.markdown("""
+<style>
+:root { --farm-green:#118653; --farm-dark:#103b2b; --farm-light:#eaf6ee; --farm-ink:#18352a; }
+/* Force readable contrast even when Streamlit's app theme is set to dark. */
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
+  background: linear-gradient(180deg,#edf7f0 0%,#f8fcf9 48%,#eaf5ee 100%) !important;
+  color: var(--farm-ink) !important;
+}
+[data-testid="stHeader"] { background: rgba(12,58,39,.94) !important; }
+[data-testid="stToolbar"] { color: white !important; }
+.block-container { padding-top: 1rem !important; padding-bottom: 2rem !important; max-width: 1500px; }
+/* Text contrast fixes for Streamlit's generated styles */
+.stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5,
+.stApp [data-testid="stMarkdownContainer"], .stApp [data-testid="stMarkdownContainer"] p,
+.stApp [data-testid="stMarkdownContainer"] li, .stApp label,
+.stApp [data-testid="stCaptionContainer"], .stApp [data-testid="stWidgetLabel"],
+.stApp [data-testid="stHeader"] * { color: var(--farm-ink) !important; }
+.stApp h1 { font-size: 2rem !important; }
+.stApp h2, .stApp h3 { color: #124b32 !important; }
+.stApp input, .stApp textarea, .stApp [data-baseweb="select"] > div {
+  background: #fff !important; color: #18352a !important; border-color: #c7dfd0 !important;
+}
+.stApp input::placeholder, .stApp textarea::placeholder { color:#667b70 !important; }
+[data-testid="stTabs"] [role="tablist"] { gap: .45rem; border-bottom: 2px solid #d5e9dc; }
+[data-testid="stTabs"] button[role="tab"] { border-radius: 12px 12px 0 0; background: #dcefe3 !important; padding: .65rem 1rem; font-weight: 700; color:#17452f !important; }
+[data-testid="stTabs"] button[aria-selected="true"] { background: #138451 !important; color: white !important; }
+[data-testid="stTabs"] button[aria-selected="true"] * { color: white !important; }
+[data-testid="stForm"], [data-testid="stVerticalBlockBorderWrapper"] { border-radius: 16px; }
+.stButton > button, .stFormSubmitButton > button { background: linear-gradient(90deg,#168653,#27a96b) !important; color:white !important; border:0 !important; border-radius:12px; font-weight:700; }
+.stButton > button *, .stFormSubmitButton > button * { color:white !important; }
+[data-testid="stMetric"] { background: white !important; border: 1px solid #d9eade; border-radius: 14px; padding: .7rem; box-shadow: 0 3px 12px rgba(18,70,43,.06); }
+[data-testid="stMetric"] label, [data-testid="stMetric"] [data-testid="stMetricValue"], [data-testid="stMetric"] [data-testid="stMetricDelta"] { color:#173d2c !important; }
+[data-testid="stAlert"] p { color:#18352a !important; }
+.farm-hero { min-height: 138px; display:flex; flex-direction:column; justify-content:center; padding: 1.4rem 1.6rem; margin: 0 0 1.2rem 0; border-radius: 18px; color:white !important; background-size:cover; background-position:center; box-shadow: inset 0 0 0 2000px rgba(7,38,24,.48); }
+.farm-hero h2, .farm-hero p { color:white !important; text-shadow:0 1px 3px rgba(0,0,0,.6); }
+.farm-hero h2 { margin:0 0 .35rem 0; font-size:1.8rem; }
+.farm-hero p { margin:0; font-size:1rem; }
+.brand-hero { min-height:160px; display:flex; flex-direction:column; justify-content:center; padding:1.6rem 1.8rem; margin:.2rem 0 1rem; border-radius:20px; color:#fff !important; background-image:linear-gradient(90deg,rgba(5,42,27,.88),rgba(9,72,43,.45)),url('https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1800&q=85'); background-size:cover; background-position:center; box-shadow:0 8px 24px rgba(9,60,36,.15); }
+.brand-hero h1, .brand-hero h2, .brand-hero p { color:#fff !important; text-shadow:0 1px 3px rgba(0,0,0,.45); margin:0; }
+.brand-hero h1 { font-size:2.25rem !important; }
+.brand-hero p { margin-top:.45rem; }
+.helper-card { padding:.8rem 1rem; background:#edf8f0; color:#18352a; border-left:4px solid #168653; border-radius:10px; margin:.4rem 0 1rem; }
+@media (max-width:700px) { .farm-hero { min-height:110px; padding:1rem; } .farm-hero h2 { font-size:1.3rem; } .brand-hero { min-height:130px; padding:1rem; } .brand-hero h1 { font-size:1.65rem !important; } }
+</style>
+""", unsafe_allow_html=True)
+
+# =========================================================
+# TAMIL AND ENGLISH TEXT
+# =========================================================
+TEXT = {
+    "en": {
+        "language": "Language / மொழி",
+        "title": "🌧️ Mazhai AI Crop",
+        "subtitle": "Smart Crop Recommendation, Yield Prediction & Fertilizer Guidance",
+        "tagline": "Smarter Farming, Better Harvests.",
+        "intro": "An educational AI-powered agricultural assistant for crop recommendations, yield estimates, live weather, and basic fertilizer guidance.",
+        "weather": "🌦️ Live Weather",
+        "city": "Enter your city",
+        "get_weather": "Get Weather",
+        "use_weather": "Apply Live Temperature and Humidity",
+        "weather_applied": "Live temperature and humidity applied to the crop form. Review rainfall and soil values before predicting.",
+        "missing_key": "Weather API key missing. Add OPENWEATHER_API_KEY to your .env file.",
+        "empty_city": "Please enter a city name.",
+        "invalid_key": "The weather API key is invalid or not active yet.",
+        "city_not_found": "City not found. Please check the spelling.",
+        "weather_error": "Unable to retrieve weather. Check your connection and API key.",
+        "temperature": "Temperature",
+        "humidity": "Humidity",
+        "conditions": "Conditions",
+        "rain_recent": "Rain in the last hour",
+        "weather_note": "Current-hour rainfall is not the same as seasonal rainfall. Enter a suitable rainfall value for the crop model.",
+        "crop_tab": "🌱 Crop Recommendation",
+        "yield_tab": "🌾 Yield Prediction",
+        "fertilizer_tab": "🧪 Fertilizer Guidance",
+        "about_tab": "ℹ️ About",
+        "soil_heading": "Soil and Weather Information",
+        "soil_help": "Enter values from a soil test and suitable local climate measurements.",
+        "nitrogen": "Nitrogen (N)",
+        "phosphorus": "Phosphorus (P)",
+        "potassium": "Potassium (K)",
+        "ph": "Soil pH",
+        "rainfall": "Rainfall (mm)",
+        "recommend": "🌾 Recommend Suitable Crop",
+        "crop_model_missing": "Crop model not found. Check models/crop_model.pkl.",
+        "crop_result": "🌱 Suggested crop: {crop}",
+        "alternatives": "Top 5 Alternative Crops",
+        "model_score": "Model score (%)",
+        "score_note": "Model scores are classifier outputs, not probabilities of farming success.",
+        "crop_error": "Crop prediction failed: {error}",
+        "yield_heading": "🌾 Crop Yield Prediction",
+        "yield_help": "Estimate yield from historical crop, location, year, rainfall, pesticide usage, and temperature data.",
+        "yield_model_missing": "Yield model not found. Run python train_yield_model.py first.",
+        "yield_units": "Yield is converted from hg/ha to tonnes per hectare.",
+        "area": "Country / Area (use dataset spelling)",
+        "crop": "Crop",
+        "year": "Year",
+        "annual_rainfall": "Average annual rainfall (mm)",
+        "pesticide": "Pesticide usage (tonnes)",
+        "average_temp": "Average temperature (°C)",
+        "predict_yield": "Predict Crop Yield",
+        "empty_area": "Please enter a country or area.",
+        "yield_result": "Estimated Crop Yield",
+        "yield_error": "Yield prediction failed: {error}",
+        "yield_warning": "This is a historical-data estimate, not a guaranteed future harvest. Predictions may be unreliable for unseen locations or future years. Validate against local agricultural data.",
+        "fertilizer_heading": "🧪 Fertilizer Guidance",
+        "fertilizer_intro": "Select a crop and enter soil-test N, P, and K values. This provides basic educational guidance, not an exact fertilizer dose.",
+        "fert_crop": "Crop for fertilizer guidance",
+        "low": "Low",
+        "medium": "Moderate",
+        "high": "High",
+        "nutrient_status": "Nutrient level",
+        "nitrogen_guidance": "Nitrogen (N) guidance",
+        "phosphorus_guidance": "Phosphorus (P) guidance",
+        "potassium_guidance": "Potassium (K) guidance",
+        "low_n": "Your entered nitrogen value is relatively low in this simple screening. Ask a local agricultural officer about an appropriate nitrogen source and timing.",
+        "medium_n": "Your entered nitrogen value is in the middle screening range. Avoid adding extra nitrogen without checking the soil test and crop growth stage.",
+        "high_n": "Your entered nitrogen value is relatively high in this simple screening. Do not add more nitrogen without professional advice; excess can harm crops and increase losses.",
+        "low_p": "Your entered phosphorus value is relatively low in this simple screening. Confirm soil-test results before considering a phosphorus fertilizer.",
+        "medium_p": "Your entered phosphorus value is in the middle screening range. Base any phosphorus application on soil-test recommendations.",
+        "high_p": "Your entered phosphorus value is relatively high in this simple screening. Avoid additional phosphorus unless a soil test or local recommendation supports it.",
+        "low_k": "Your entered potassium value is relatively low in this simple screening. Confirm the soil test before considering a potassium source.",
+        "medium_k": "Your entered potassium value is in the middle screening range. Use crop- and soil-specific guidance before applying more.",
+        "high_k": "Your entered potassium value is relatively high in this simple screening. Avoid extra potassium unless supported by soil testing.",
+        "fertilizer_caution": "Important: these low/moderate/high bands are simple app heuristics, not calibrated agronomic thresholds. N, P, and K units and soil-test methods vary. Do not calculate or apply a fertilizer dose from these labels alone. Follow a local soil-test report and official agricultural recommendations.",
+        "crop_note": "Different crops have different nutrient needs and growth stages. This tool does not currently calculate crop-specific fertilizer quantities.",
+        "about_heading": "About Mazhai AI Crop",
+        "about_description": "An educational agricultural AI project combining machine learning with soil and climate information.",
+        "features": "Features",
+        "feature1": "Crop recommendation using soil and climate inputs",
+        "feature2": "Machine-learning crop classification",
+        "feature3": "Historical crop yield prediction",
+        "feature4": "Live weather lookup",
+        "feature5": "Bilingual fertilizer guidance",
+        "technology": "Technology Stack",
+        "limitation": "Predictions depend on training data and input quality. Consult local agricultural experts before making farming decisions.",
+        "footer": "Mazhai AI Crop | AI for Smarter Agriculture",
+    },
+    "ta": {
+        "language": "மொழி / Language",
+        "title": "🌧️ மழை AI பயிர்",
+        "subtitle": "பயிர் பரிந்துரை, மகசூல் கணிப்பு மற்றும் உர வழிகாட்டி",
+        "tagline": "சிறந்த விவசாயம், சிறந்த அறுவடை.",
+        "intro": "பயிர் பரிந்துரை, மகசூல் மதிப்பீடு, நேரடி வானிலை மற்றும் அடிப்படை உர வழிகாட்டலுக்கான கல்வி நோக்கிலான AI விவசாய உதவித் தளம்.",
+        "weather": "🌦️ நேரடி வானிலை",
+        "city": "உங்கள் நகரத்தின் பெயரை உள்ளிடவும்",
+        "get_weather": "வானிலையைப் பெறுக",
+        "use_weather": "நேரடி வெப்பநிலை மற்றும் ஈரப்பதத்தைப் பயன்படுத்தவும்",
+        "weather_applied": "நேரடி வெப்பநிலை மற்றும் ஈரப்பதம் பயிர் படிவத்தில் சேர்க்கப்பட்டுள்ளன. கணிப்பதற்கு முன் மழைப்பொழிவு மற்றும் மண் மதிப்புகளைச் சரிபார்க்கவும்.",
+        "missing_key": ".env கோப்பில் OPENWEATHER_API_KEY விசையைச் சேர்க்கவும்.",
+        "empty_city": "நகரத்தின் பெயரை உள்ளிடவும்.",
+        "invalid_key": "வானிலை API விசை தவறானது அல்லது இன்னும் செயல்படவில்லை.",
+        "city_not_found": "நகரம் கிடைக்கவில்லை. பெயரைச் சரிபார்க்கவும்.",
+        "weather_error": "வானிலைத் தகவலைப் பெற முடியவில்லை. இணைய இணைப்பு மற்றும் API விசையைச் சரிபார்க்கவும்.",
+        "temperature": "வெப்பநிலை",
+        "humidity": "ஈரப்பதம்",
+        "conditions": "வானிலை நிலை",
+        "rain_recent": "கடந்த ஒரு மணி நேர மழை",
+        "weather_note": "கடந்த ஒரு மணி நேர மழை என்பது பருவகால மழைப்பொழிவுக்கு சமமல்ல. பயிர் மாதிரிக்கு பொருத்தமான மழைப்பொழிவு மதிப்பை உள்ளிடவும்.",
+        "crop_tab": "🌱 பயிர் பரிந்துரை",
+        "yield_tab": "🌾 மகசூல் கணிப்பு",
+        "fertilizer_tab": "🧪 உர வழிகாட்டி",
+        "about_tab": "ℹ️ அறிமுகம்",
+        "soil_heading": "மண் மற்றும் வானிலை விவரங்கள்",
+        "soil_help": "மண் பரிசோதனை மதிப்புகள் மற்றும் பொருத்தமான உள்ளூர் காலநிலை அளவுகளை உள்ளிடவும்.",
+        "nitrogen": "நைட்ரஜன் (N)",
+        "phosphorus": "பாஸ்பரஸ் (P)",
+        "potassium": "பொட்டாசியம் (K)",
+        "ph": "மண்ணின் pH",
+        "rainfall": "மழைப்பொழிவு (மிமீ)",
+        "recommend": "🌾 பொருத்தமான பயிரைப் பரிந்துரைக்கவும்",
+        "crop_model_missing": "பயிர் மாதிரி கிடைக்கவில்லை. models/crop_model.pkl கோப்பைச் சரிபார்க்கவும்.",
+        "crop_result": "🌱 பரிந்துரைக்கப்படும் பயிர்: {crop}",
+        "alternatives": "சிறந்த 5 மாற்றுப் பயிர்கள்",
+        "model_score": "மாதிரி மதிப்பெண் (%)",
+        "score_note": "மாதிரி மதிப்பெண்கள் விவசாய வெற்றிக்கான நிகழ்தகவுகள் அல்ல.",
+        "crop_error": "பயிர் கணிப்பில் பிழை: {error}",
+        "yield_heading": "🌾 பயிர் மகசூல் கணிப்பு",
+        "yield_help": "பயிர், பகுதி, ஆண்டு, மழைப்பொழிவு, பூச்சிக்கொல்லி பயன்பாடு மற்றும் வெப்பநிலைத் தரவுகளின் அடிப்படையில் மகசூலை மதிப்பிடவும்.",
+        "yield_model_missing": "மகசூல் மாதிரி கிடைக்கவில்லை. முதலில் python train_yield_model.py கட்டளையை இயக்கவும்.",
+        "yield_units": "மகசூல் hg/ha அலகிலிருந்து டன்/ஹெக்டேர் அலகிற்கு மாற்றப்படுகிறது.",
+        "area": "நாடு / பகுதி (தரவுத்தொகுப்பில் உள்ள பெயரைப் பயன்படுத்தவும்)",
+        "crop": "பயிர்",
+        "year": "ஆண்டு",
+        "annual_rainfall": "சராசரி ஆண்டு மழைப்பொழிவு (மிமீ)",
+        "pesticide": "பூச்சிக்கொல்லி பயன்பாடு (டன்)",
+        "average_temp": "சராசரி வெப்பநிலை (°C)",
+        "predict_yield": "மகசூலைக் கணிக்கவும்",
+        "empty_area": "நாடு அல்லது பகுதியின் பெயரை உள்ளிடவும்.",
+        "yield_result": "மதிப்பிடப்பட்ட பயிர் மகசூல்",
+        "yield_error": "மகசூல் கணிப்பில் பிழை: {error}",
+        "yield_warning": "இது வரலாற்றுத் தரவை அடிப்படையாகக் கொண்ட மதிப்பீடு மட்டுமே; உறுதியான எதிர்கால அறுவடை கணிப்பு அல்ல. உள்ளூர் விவசாயத் தரவுகளுடன் சரிபார்க்கவும்.",
+        "fertilizer_heading": "🧪 உர வழிகாட்டி",
+        "fertilizer_intro": "பயிரைத் தேர்ந்தெடுத்து மண் பரிசோதனையில் கிடைத்த N, P, K மதிப்புகளை உள்ளிடவும். இது அடிப்படை கல்வி வழிகாட்டல் மட்டுமே; துல்லியமான உர அளவு அல்ல.",
+        "fert_crop": "உர வழிகாட்டலுக்கான பயிர்",
+        "low": "குறைவு",
+        "medium": "மிதமானது",
+        "high": "அதிகம்",
+        "nutrient_status": "ஊட்டச்சத்து நிலை",
+        "nitrogen_guidance": "நைட்ரஜன் (N) வழிகாட்டல்",
+        "phosphorus_guidance": "பாஸ்பரஸ் (P) வழிகாட்டல்",
+        "potassium_guidance": "பொட்டாசியம் (K) வழிகாட்டல்",
+        "low_n": "இந்த எளிய மதிப்பீட்டில் நைட்ரஜன் அளவு குறைவாக உள்ளது. பொருத்தமான நைட்ரஜன் உரம் மற்றும் பயன்படுத்தும் நேரம் குறித்து உள்ளூர் வேளாண் அலுவலரிடம் ஆலோசனை பெறவும்.",
+        "medium_n": "இந்த எளிய மதிப்பீட்டில் நைட்ரஜன் அளவு மிதமானது. மண் பரிசோதனை மற்றும் பயிரின் வளர்ச்சி நிலையைச் சரிபார்க்காமல் கூடுதல் நைட்ரஜன் இட வேண்டாம்.",
+        "high_n": "இந்த எளிய மதிப்பீட்டில் நைட்ரஜன் அளவு அதிகமாக உள்ளது. நிபுணர் ஆலோசனையின்றி கூடுதல் நைட்ரஜன் இட வேண்டாம்; அதிகப்படியான உரம் பயிருக்கும் சுற்றுச்சூழலுக்கும் பாதிப்பை ஏற்படுத்தலாம்.",
+        "low_p": "இந்த எளிய மதிப்பீட்டில் பாஸ்பரஸ் அளவு குறைவாக உள்ளது. பாஸ்பரஸ் உரம் இடுவதற்கு முன் மண் பரிசோதனையை உறுதிப்படுத்தவும்.",
+        "medium_p": "இந்த எளிய மதிப்பீட்டில் பாஸ்பரஸ் அளவு மிதமானது. மண் பரிசோதனை பரிந்துரைப்படி உரமிடவும்.",
+        "high_p": "இந்த எளிய மதிப்பீட்டில் பாஸ்பரஸ் அளவு அதிகமாக உள்ளது. மண் பரிசோதனை அல்லது உள்ளூர் பரிந்துரை ஆதரிக்காவிட்டால் கூடுதல் பாஸ்பரஸ் இட வேண்டாம்.",
+        "low_k": "இந்த எளிய மதிப்பீட்டில் பொட்டாசியம் அளவு குறைவாக உள்ளது. பொட்டாசியம் உரம் இடுவதற்கு முன் மண் பரிசோதனையை உறுதிப்படுத்தவும்.",
+        "medium_k": "இந்த எளிய மதிப்பீட்டில் பொட்டாசியம் அளவு மிதமானது. கூடுதல் உரமிடுவதற்கு முன் பயிர் மற்றும் மண்ணுக்கான பரிந்துரையைப் பெறவும்.",
+        "high_k": "இந்த எளிய மதிப்பீட்டில் பொட்டாசியம் அளவு அதிகமாக உள்ளது. மண் பரிசோதனை ஆதரிக்காவிட்டால் கூடுதல் பொட்டாசியம் இட வேண்டாம்.",
+        "fertilizer_caution": "முக்கியம்: குறைவு/மிதமானது/அதிகம் என்ற வகைப்பாடுகள் எளிய செயலி மதிப்பீடுகள் மட்டுமே; வேளாண் அறிவியல் அடிப்படையில் உறுதிப்படுத்தப்பட்ட வரம்புகள் அல்ல. N, P, K அலகுகளும் மண் பரிசோதனை முறைகளும் மாறுபடும். இந்த வகைப்பாட்டை மட்டும் வைத்து உர அளவைத் தீர்மானிக்க வேண்டாம். உள்ளூர் மண் பரிசோதனை அறிக்கை மற்றும் அதிகாரப்பூர்வ வேளாண் பரிந்துரைகளைப் பின்பற்றவும்.",
+        "crop_note": "ஒவ்வொரு பயிருக்கும் வளர்ச்சி நிலைக்கும் ஊட்டச்சத்து தேவை மாறுபடும். இந்தக் கருவி தற்போது பயிருக்கு ஏற்ற துல்லியமான உர அளவைக் கணக்கிடாது.",
+        "about_heading": "மழை AI பயிர் பற்றி",
+        "about_description": "மண் மற்றும் காலநிலைத் தகவல்களுடன் இயந்திரக் கற்றலை இணைக்கும் விவசாய AI திட்டம்.",
+        "features": "அம்சங்கள்",
+        "feature1": "மண் மற்றும் காலநிலை அடிப்படையிலான பயிர் பரிந்துரை",
+        "feature2": "இயந்திரக் கற்றல் பயிர் வகைப்பாடு",
+        "feature3": "வரலாற்றுத் தரவு அடிப்படையிலான மகசூல் கணிப்பு",
+        "feature4": "நேரடி வானிலைத் தகவல்",
+        "feature5": "தமிழ் மற்றும் ஆங்கில உர வழிகாட்டி",
+        "technology": "பயன்படுத்தப்படும் தொழில்நுட்பங்கள்",
+        "limitation": "கணிப்புகள் பயிற்சித் தரவு மற்றும் உள்ளீடுகளின் தரத்தைப் பொறுத்தது. விவசாய முடிவுகளுக்கு முன் உள்ளூர் வேளாண் நிபுணர்களின் ஆலோசனையைப் பெறவும்.",
+        "footer": "மழை AI பயிர் | சிறந்த விவசாயத்திற்கான AI",
+    },
+}
+
+
+def tr(key, **kwargs):
+    lang = st.session_state.get("language", "en")
+    value = TEXT[lang][key]
+    return value.format(**kwargs) if kwargs else value
+
+
+@st.cache_resource
+def load_crop_model(path):
+    return joblib.load(path)
+
+
+@st.cache_resource
+def load_yield_bundle(path):
+    return joblib.load(path)
+
+
+def nutrient_band(value):
+    """Simple illustrative screening bands; not agronomic recommendations."""
+    if value < 40:
+        return "low"
+    if value < 80:
+        return "medium"
+    return "high"
+
+
+def hero_banner(title, subtitle, image_url):
+    """Show a crop-specific scenic banner above a tab's content."""
+    st.markdown(
+        f"""<section class="farm-hero" style="background-image: url('{image_url}');">
+        <h2>{title}</h2><p>{subtitle}</p></section>""",
+        unsafe_allow_html=True,
+    )
+
+
+# =========================================================
+# LANGUAGE SELECTOR AND HEADER
+# =========================================================
+language_choice = st.selectbox(
+    TEXT["en"]["language"],
+    ["English", "தமிழ்"],
+    key="language_choice",
+)
+st.session_state["language"] = "ta" if language_choice == "தமிழ்" else "en"
+
+st.markdown(
+    f"""<section class="brand-hero">
+    <h1>{tr('title')}</h1>
+    <h2>{tr('subtitle')}</h2>
+    <p>{tr('tagline')} / {tr('intro')}</p>
+    </section>""",
+    unsafe_allow_html=True,
+)
+
+# =========================================================
+# LIVE WEATHER
+# =========================================================
+hero_banner(
+    "🌦️ " + tr("weather"),
+    "Live conditions for smarter farm decisions / விவசாயத்திற்கான நேரடி வானிலை",
+    "https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1800&q=85",
+)
+st.header(tr("weather"))
+
+with st.container(border=True):
+    weather_col, button_col = st.columns([3, 1])
+
+    with weather_col:
+        city = st.text_input(
+            tr("city"),
+            value=st.session_state.get("weather_city", "Cuddalore"),
+            key="weather_city_input",
+        )
+
+    with button_col:
+        st.write("")
+        get_weather = st.button(
+            tr("get_weather"),
+            type="primary",
+            use_container_width=True,
+        )
+
+    if get_weather:
+        if not API_KEY:
+            st.error(tr("missing_key"))
+        elif not city.strip():
+            st.warning(tr("empty_city"))
+        else:
+            try:
+                response = requests.get(
+                    "https://api.openweathermap.org/data/2.5/weather",
+                    params={
+                        "q": city.strip(),
+                        "appid": API_KEY,
+                        "units": "metric",
+                    },
+                    timeout=15,
+                )
+                response.raise_for_status()
+                weather_response = response.json()
+
+                st.session_state["weather_data"] = weather_response
+                st.session_state["weather_city"] = city.strip()
+                st.session_state["live_temperature"] = float(
+                    weather_response["main"]["temp"]
+                )
+                st.session_state["live_humidity"] = float(
+                    weather_response["main"]["humidity"]
+                )
+
+            except requests.HTTPError as exc:
+                status = (
+                    exc.response.status_code
+                    if exc.response is not None else None
+                )
+                if status == 401:
+                    st.error(tr("invalid_key"))
+                elif status == 404:
+                    st.error(tr("city_not_found"))
+                else:
+                    st.error(tr("weather_error"))
+            except (requests.RequestException, KeyError, TypeError, ValueError):
+                st.error(tr("weather_error"))
+
+weather = st.session_state.get("weather_data")
+
+if weather:
+    st.caption(weather.get("name", st.session_state.get("weather_city", "")))
+    w1, w2, w3 = st.columns(3)
+
+    w1.metric(
+        tr("temperature"),
+        f"{weather['main']['temp']:.1f} °C",
+    )
+    w2.metric(
+        tr("humidity"),
+        f"{weather['main']['humidity']}%",
+    )
+    description = weather.get("weather", [{}])[0].get("description", "—")
+    w3.metric(tr("conditions"), description.title())
+
+    if weather.get("rain"):
+        st.metric(
+            tr("rain_recent"),
+            f"{weather['rain'].get('1h', 0)} mm",
+        )
+
+    # Button runs before crop widgets are created, so setting their state is safe.
+    if st.button(tr("use_weather"), key="apply_weather_to_crop"):
+        st.session_state["crop_temperature"] = float(weather["main"]["temp"])
+        st.session_state["crop_humidity"] = float(weather["main"]["humidity"])
+        st.session_state["weather_applied_notice"] = True
+
+    if st.session_state.get("weather_applied_notice"):
+        st.success(tr("weather_applied"))
+
+st.caption(tr("weather_note"))
+
+# =========================================================
+# MAIN TABS
+# =========================================================
+crop_tab, yield_tab, fertilizer_tab, plant_doctor_tab, about_tab = st.tabs(
+    [
+        tr("crop_tab"),
+        tr("yield_tab"),
+        tr("fertilizer_tab"),
+        "🌿 AI Plant Doctor / AI தாவர மருத்துவர்",
+        tr("about_tab"),
+    ]
+)
+
+# =========================================================
+# CROP RECOMMENDATION
+# =========================================================
+with crop_tab:
+    hero_banner(
+        "🌱 " + tr("crop_tab"),
+        "Choose suitable crops using soil and climate information / மண் மற்றும் காலநிலை அடிப்படையில் பயிரைத் தேர்ந்தெடுக்கவும்",
+        "https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&w=1800&q=85",
+    )
+    st.header(tr("soil_heading"))
+    st.write(tr("soil_help"))
+
+    defaults = {
+        "crop_nitrogen": 50.0,
+        "crop_phosphorus": 40.0,
+        "crop_potassium": 40.0,
+        "crop_temperature": 28.0,
+        "crop_humidity": 70.0,
+        "crop_ph": 6.5,
+        "crop_rainfall": 150.0,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        nitrogen = st.number_input(
+            tr("nitrogen"), min_value=0.0, max_value=200.0,
+            key="crop_nitrogen",
+        )
+        phosphorus = st.number_input(
+            tr("phosphorus"), min_value=0.0, max_value=200.0,
+            key="crop_phosphorus",
+        )
+        potassium = st.number_input(
+            tr("potassium"), min_value=0.0, max_value=200.0,
+            key="crop_potassium",
+        )
+
+    with c2:
+        temperature = st.number_input(
+            tr("temperature") + " (°C)",
+            min_value=-10.0, max_value=60.0,
+            key="crop_temperature",
+        )
+        humidity = st.number_input(
+            tr("humidity") + " (%)",
+            min_value=0.0, max_value=100.0,
+            key="crop_humidity",
+        )
+
+    with c3:
+        ph = st.number_input(
+            tr("ph"), min_value=0.0, max_value=14.0,
+            key="crop_ph",
+        )
+        rainfall = st.number_input(
+            tr("rainfall"), min_value=0.0, max_value=5000.0,
+            key="crop_rainfall",
+        )
+
+    if st.button(tr("recommend"), type="primary", key="recommend_crop"):
+        if not CROP_MODEL_PATH.exists():
+            st.error(tr("crop_model_missing"))
+        else:
+            try:
+                crop_model = load_crop_model(str(CROP_MODEL_PATH))
+                crop_input = pd.DataFrame([{
+                    "N": nitrogen,
+                    "P": phosphorus,
+                    "K": potassium,
+                    "temperature": temperature,
+                    "humidity": humidity,
+                    "ph": ph,
+                    "rainfall": rainfall,
+                }])
+                predicted_crop = crop_model.predict(crop_input)[0]
+                st.success(tr("crop_result", crop=str(predicted_crop).title()))
+
+                if hasattr(crop_model, "predict_proba"):
+                    probabilities = crop_model.predict_proba(crop_input)[0]
+                    score_label = tr("model_score")
+                    alternatives = pd.DataFrame({
+                        "Crop": crop_model.classes_,
+                        score_label: probabilities * 100,
+                    }).sort_values(score_label, ascending=False).head(5)
+
+                    st.subheader(tr("alternatives"))
+                    st.bar_chart(alternatives.set_index("Crop")[score_label])
+                    st.caption(tr("score_note"))
+
+            except Exception as exc:
+                st.error(tr("crop_error", error=str(exc)))
+
+# =========================================================
+# CROP YIELD PREDICTION
+# =========================================================
+with yield_tab:
+    hero_banner(
+        "🌾 " + tr("yield_tab"),
+        "Estimate harvest potential from historical data / பழைய தரவுகளின் அடிப்படையில் மகசூலை மதிப்பிடவும்",
+        "https://images.unsplash.com/photo-1574323347407-f5e1ad6d020b?auto=format&fit=crop&w=1800&q=85",
+    )
+    st.header(tr("yield_heading"))
+    st.write(tr("yield_help"))
+
+    if not YIELD_MODEL_PATH.exists():
+        st.warning(tr("yield_model_missing"))
+    else:
+        try:
+            yield_bundle = load_yield_bundle(str(YIELD_MODEL_PATH))
+            yield_model = yield_bundle["model"]
+            yield_features = yield_bundle.get(
+                "features",
+                [
+                    "Area",
+                    "Item",
+                    "Year",
+                    "average_rain_fall_mm_per_year",
+                    "pesticides_tonnes",
+                    "avg_temp",
+                ],
+            )
+
+            st.caption(tr("yield_units"))
+
+            crop_options = [
+                "Maize",
+                "Rice, paddy",
+                "Wheat",
+                "Potatoes",
+                "Sorghum",
+                "Soybeans",
+                "Cassava",
+            ]
+            crop_names_ta = {
+                "Maize": "மக்காச்சோளம்",
+                "Rice, paddy": "நெல்",
+                "Wheat": "கோதுமை",
+                "Potatoes": "உருளைக்கிழங்கு",
+                "Sorghum": "சோளம்",
+                "Soybeans": "சோயாபீன்ஸ்",
+                "Cassava": "மரவள்ளிக்கிழங்கு",
+            }
+            display_crops = (
+                [crop_names_ta[crop] for crop in crop_options]
+                if st.session_state["language"] == "ta"
+                else crop_options
+            )
+
+            with st.form("yield_prediction_form"):
+                area = st.text_input(tr("area"), value="India")
+                selected_display = st.selectbox(tr("crop"), display_crops)
+                selected_crop = crop_options[display_crops.index(selected_display)]
+
+                y1, y2 = st.columns(2)
+                with y1:
+                    year = st.number_input(
+                        tr("year"), min_value=1961, max_value=2100,
+                        value=2020, step=1,
+                    )
+                    annual_rainfall = st.number_input(
+                        tr("annual_rainfall"), min_value=0.0, value=1000.0,
+                    )
+                with y2:
+                    pesticide = st.number_input(
+                        tr("pesticide"), min_value=0.0, value=100.0,
+                    )
+                    average_temp = st.number_input(
+                        tr("average_temp"), min_value=-10.0,
+                        max_value=60.0, value=25.0,
+                    )
+
+                predict_yield = st.form_submit_button(
+                    tr("predict_yield"), type="primary"
+                )
+
+            if predict_yield:
+                if not area.strip():
+                    st.error(tr("empty_area"))
+                else:
+                    yield_input = pd.DataFrame([{
+                        "Area": area.strip(),
+                        "Item": selected_crop,
+                        "Year": year,
+                        "average_rain_fall_mm_per_year": annual_rainfall,
+                        "pesticides_tonnes": pesticide,
+                        "avg_temp": average_temp,
+                    }])
+                    try:
+                        yield_input = yield_input[yield_features]
+                        predicted_hg_ha = float(yield_model.predict(yield_input)[0])
+                        predicted_tonnes_ha = predicted_hg_ha / 10000
+                        st.metric(
+                            tr("yield_result"),
+                            f"{predicted_tonnes_ha:,.2f} tonnes/ha",
+                        )
+                        st.warning(tr("yield_warning"))
+                    except Exception as exc:
+                        st.error(tr("yield_error", error=str(exc)))
+
+        except Exception as exc:
+            st.error(f"{tr('yield_model_missing')} Details: {exc}")
+
+# =========================================================
+# FERTILIZER GUIDANCE
+# =========================================================
+with fertilizer_tab:
+    hero_banner(
+        "🧪 " + tr("fertilizer_tab"),
+        "Crop-specific nutrient planning and safe application / பயிருக்கு ஏற்ற ஊட்டச்சத்து மற்றும் பாதுகாப்பான பயன்பாடு",
+        "https://images.unsplash.com/photo-1416879595882-3373a0480b5b?auto=format&fit=crop&w=1800&q=85",
+    )
+    st.header(tr("fertilizer_heading"))
+    st.write(tr("fertilizer_intro"))
+    st.info("The catalogue includes field crops, vegetables, fruits, herbs, flowers, garden plants and trees. Exact fertilizer doses still depend on crop variety, age, soil test and local agricultural guidance. / இந்தப் பட்டியலில் வயல் பயிர்கள், காய்கறிகள், பழங்கள், மூலிகைகள், பூக்கள், தோட்டச் செடிகள் மற்றும் மரங்கள் உள்ளன. சரியான உர அளவு பயிர் வகை, வயது, மண் பரிசோதனை மற்றும் உள்ளூர் வேளாண் பரிந்துரையைப் பொறுத்தது.")
+
+    fertilizer_crops_en = [
+        "Rice", "Maize", "Wheat", "Sorghum", "Millet", "Barley", "Oats",
+        "Ragi / Finger millet", "Pearl millet", "Pulses", "Chickpea", "Pigeon pea",
+        "Green gram", "Black gram", "Lentil", "Cowpea", "Soybean", "Groundnut",
+        "Sesame", "Sunflower", "Mustard", "Cotton", "Sugarcane", "Tobacco",
+        "Potato", "Sweet potato", "Cassava", "Tomato", "Brinjal / Eggplant",
+        "Chilli", "Onion", "Garlic", "Cabbage", "Cauliflower", "Okra / Lady's finger",
+        "Carrot", "Radish", "Cucumber", "Pumpkin", "Bitter gourd", "Bottle gourd",
+        "Beans", "Peas", "Banana", "Mango", "Coconut", "Papaya", "Guava", "Lemon",
+        "Orange", "Grapes", "Pomegranate", "Jackfruit", "Watermelon", "Pineapple",
+        "Turmeric", "Ginger", "Pepper", "Cardamom", "Coriander", "Mint", "Basil",
+        "Rose", "Jasmine", "Marigold", "Hibiscus", "Chrysanthemum", "Lawn grass",
+        "Neem tree", "Teak tree", "Mango tree", "Coconut tree", "Amla tree",
+        "Drumstick tree", "Tamarind tree", "Guava tree", "Eucalyptus", "Bamboo",
+        "Areca palm", "Cashew tree", "Coffee", "Tea", "Rubber", "Fodder grass",
+        "Ornamental plant", "Medicinal plant", "Other crop / plant / tree",
+    ]
+    fertilizer_crops_ta = [
+        "நெல்", "மக்காச்சோளம்", "கோதுமை", "சோளம்", "சிறுதானியம்", "பார்லி", "ஓட்ஸ்",
+        "கேழ்வரகு", "கம்பு", "பயறு வகைகள்", "கொண்டைக்கடலை", "துவரை", "பாசிப்பயறு",
+        "உளுந்து", "மசூர் பருப்பு", "தட்டைப்பயறு", "சோயாபீன்ஸ்", "நிலக்கடலை",
+        "எள்", "சூரியகாந்தி", "கடுகு", "பருத்தி", "கரும்பு", "புகையிலை", "உருளைக்கிழங்கு",
+        "சர்க்கரைவள்ளி", "மரவள்ளிக்கிழங்கு", "தக்காளி", "கத்திரிக்காய்", "மிளகாய்", "வெங்காயம்",
+        "பூண்டு", "முட்டைக்கோஸ்", "காலிஃபிளவர்", "வெண்டைக்காய்", "கேரட்", "முள்ளங்கி",
+        "வெள்ளரிக்காய்", "பூசணி", "பாகற்காய்", "சுரைக்காய்", "பீன்ஸ்", "பட்டாணி", "வாழை",
+        "மாமரம்", "தென்னை", "பப்பாளி", "கொய்யா", "எலுமிச்சை", "ஆரஞ்சு", "திராட்சை",
+        "மாதுளை", "பலா", "தர்பூசணி", "அன்னாசி", "மஞ்சள்", "இஞ்சி", "மிளகு", "ஏலக்காய்",
+        "கொத்தமல்லி", "புதினா", "துளசி", "ரோஜா", "மல்லிகை", "சாமந்தி", "செம்பருத்தி",
+        "சந்திரமல்லி", "புல்வெளிப் புல்", "வேப்பமரம்", "தேக்கு", "மாமரம்", "தென்னைமரம்",
+        "நெல்லி", "முருங்கை", "புளியமரம்", "கொய்யாமரம்", "யூகலிப்டஸ்", "மூங்கில்",
+        "பாக்கு மரம்", "முந்திரி", "காபி", "தேயிலை", "ரப்பர்", "தீவனப் புல்",
+        "அலங்காரச் செடி", "மருத்துவச் செடி", "மற்ற பயிர் / செடி / மரம்",
+    ]
+
+    display_fertilizer_crops = (
+        fertilizer_crops_ta
+        if st.session_state["language"] == "ta"
+        else fertilizer_crops_en
+    )
+
+    with st.form("fertilizer_form"):
+        fertilizer_crop_display = st.selectbox(
+            tr("fert_crop"), display_fertilizer_crops
+        )
+        f1, f2, f3 = st.columns(3)
+
+        with f1:
+            fert_n = st.number_input(
+                tr("nitrogen"), min_value=0.0, max_value=2000.0,
+                value=50.0, key="fert_n",
+            )
+        with f2:
+            fert_p = st.number_input(
+                tr("phosphorus"), min_value=0.0, max_value=2000.0,
+                value=40.0, key="fert_p",
+            )
+        with f3:
+            fert_k = st.number_input(
+                tr("potassium"), min_value=0.0, max_value=2000.0,
+                value=40.0, key="fert_k",
+            )
+
+        analyze_fertilizer = st.form_submit_button(
+            tr("fertilizer_heading"), type="primary"
+        )
+
+    if analyze_fertilizer:
+        selected_crop_index = display_fertilizer_crops.index(
+            fertilizer_crop_display
+        )
+        selected_fertilizer_crop = fertilizer_crops_en[selected_crop_index]
+        st.subheader(f"{tr('crop')}: {selected_fertilizer_crop}")
+
+        nutrient_info = [
+            ("N", fert_n, "nitrogen_guidance", "low_n", "medium_n", "high_n"),
+            ("P", fert_p, "phosphorus_guidance", "low_p", "medium_p", "high_p"),
+            ("K", fert_k, "potassium_guidance", "low_k", "medium_k", "high_k"),
+        ]
+
+        status_labels = {
+            "low": tr("low"),
+            "medium": tr("medium"),
+            "high": tr("high"),
+        }
+
+        for nutrient, value, heading_key, low_key, medium_key, high_key in nutrient_info:
+            band = nutrient_band(value)
+            st.markdown(f"**{tr(heading_key)}**")
+            st.write(
+                f"{nutrient}: {status_labels[band]} "
+                f"({value:g}; entered value)"
+            )
+
+            advice_key = {
+                "low": low_key,
+                "medium": medium_key,
+                "high": high_key,
+            }[band]
+            st.info(tr(advice_key))
+
+        st.warning(tr("fertilizer_caution"))
+        st.caption(tr("crop_note"))
+
+# =========================================================
+# AI PLANT DOCTOR: BROAD PLANT / CROP / TREE HEALTH ASSESSMENT
+# =========================================================
+with plant_doctor_tab:
+    hero_banner(
+        "🌿 AI Plant Doctor / AI தாவர மருத்துவர்",
+        "Upload a leaf or plant photo for an AI health assessment / இலை அல்லது தாவரப் புகைப்படத்தைப் பதிவேற்றவும்",
+        "https://images.unsplash.com/photo-1518531933037-91b2f5f229cc?auto=format&fit=crop&w=1800&q=85",
+    )
+    if st.session_state.get("language", "en") == "ta":
+        st.write("பயிர்கள், காய்கறிகள், பழமரங்கள், அலங்காரச் செடிகள் மற்றும் பிற தாவரங்களின் புகைப்படங்களைச் சோதிக்க இந்த வசதி உதவும். முடிவு கிடைக்கும் தாவர வகை மற்றும் API மாதிரியின் வரம்பைப் பொறுத்தது.")
+        st.info("இது ஆரம்பகட்ட AI மதிப்பீடு மட்டுமே. புகைப்படம் மட்டும் வைத்து எல்லா நோய்களையும் உறுதியாக கண்டறிய முடியாது. மருந்து அல்லது பூச்சிக்கொல்லி பயன்படுத்துவதற்கு முன் உள்ளூர் வேளாண் நிபுணரை அணுகவும்.")
+        upload_label = "தாவரத்தின் புகைப்படத்தைப் பதிவேற்றவும்"
+        diagnose_label = "🔍 தாவர ஆரோக்கியத்தைச் சரிபார்க்கவும்"
+        no_key_msg = "KINDWISE_API_KEY அமைக்கப்படவில்லை. உங்கள் .env கோப்பில் API விசையைச் சேர்த்து மீண்டும் தொடங்கவும்."
+        identify_title = "தாவர அடையாளம்"
+        health_title = "ஆரோக்கிய மதிப்பீடு"
+        healthy_msg = "AI மதிப்பீட்டின்படி தாவரம் ஆரோக்கியமாக இருக்கலாம்."
+        unhealthy_msg = "AI மதிப்பீட்டின்படி உடல்நலப் பிரச்சினை இருக்கலாம்."
+        no_disease_msg = "குறிப்பிட்ட நோய் பரிந்துரைகள் கிடைக்கவில்லை."
+    else:
+        st.write("Check photos of crops, vegetables, fruit trees, ornamental plants, and other plant types. Coverage depends on the provider's model and the quality of the image.")
+        st.info("This is an initial AI assessment, not a guaranteed diagnosis. A photo cannot reliably identify every disease. Consult a local agricultural expert before applying pesticides or other treatments.")
+        upload_label = "Upload a plant photo"
+        diagnose_label = "🔍 Assess plant health"
+        no_key_msg = "KINDWISE_API_KEY is not configured. Add it to your .env file and restart the app."
+        identify_title = "Plant identification"
+        health_title = "Health assessment"
+        healthy_msg = "The AI assessment suggests the plant may be healthy."
+        unhealthy_msg = "The AI assessment suggests a possible health issue."
+        no_disease_msg = "No specific disease suggestions were returned."
+
+    plant_image = st.file_uploader(
+        upload_label,
+        type=["jpg", "jpeg", "png", "webp"],
+        key="plant_doctor_upload",
+        help="Use a clear, well-lit photo. Include affected leaves and, if possible, the whole plant.",
+    )
+    if plant_image is not None:
+        st.image(plant_image, caption=upload_label, use_container_width=True)
+        st.caption("Tip: photograph the affected area close-up and avoid blurry, dark, or heavily filtered images.")
+
+    if st.button(diagnose_label, key="run_plant_doctor", type="primary", disabled=plant_image is None):
+        if not KINDWISE_API_KEY:
+            st.error(no_key_msg)
+            st.markdown("Get API access from [Kindwise Plant.id](https://www.kindwise.com/plant-id) and store the key privately as `KINDWISE_API_KEY`.")
+        else:
+            encoded_image = base64.b64encode(plant_image.getvalue()).decode("ascii")
+            headers = {"Api-Key": KINDWISE_API_KEY, "Content-Type": "application/json"}
+            try:
+                with st.spinner("AI is checking the plant photo… / தாவரப் புகைப்படத்தை AI ஆய்வு செய்கிறது…"):
+                    # Plant identification and health assessment are separate API requests;
+                    # provider usage/credits may apply to each request.
+                    identification_response = requests.post(
+                        "https://api.plant.id/v3/identification",
+                        params={"details": "common_names,taxonomy"},
+                        headers=headers,
+                        json={"images": [encoded_image]},
+                        timeout=45,
+                    )
+                    identification_response.raise_for_status()
+                    identification = identification_response.json()
+
+                    health_response = requests.post(
+                        "https://api.plant.id/v3/health_assessment",
+                        params={"details": "description,treatment"},
+                        headers=headers,
+                        json={"images": [encoded_image]},
+                        timeout=45,
+                    )
+                    health_response.raise_for_status()
+                    health = health_response.json()
+
+                ident_result = identification.get("result", {})
+                plant_check = ident_result.get("is_plant", {})
+                if plant_check.get("binary") is False:
+                    st.warning("The image may not contain a recognizable plant. Try a clear photo of a leaf, stem, fruit, or whole plant.")
+                else:
+                    suggestions = ident_result.get("classification", {}).get("suggestions", [])
+                    st.subheader(identify_title)
+                    if suggestions:
+                        for suggestion in suggestions[:3]:
+                            common_names = suggestion.get("details", {}).get("common_names") or []
+                            common = ", ".join(common_names) if isinstance(common_names, list) else str(common_names)
+                            label = suggestion.get("name", "Unknown plant")
+                            if common:
+                                label += f" ({common})"
+                            st.write(f"**{label}** — {float(suggestion.get('probability', 0))*100:.1f}% model score")
+                    else:
+                        st.write("Plant species could not be identified confidently from this photo.")
+
+                health_result = health.get("result", {})
+                healthy_info = health_result.get("is_healthy", {})
+                healthy_binary = healthy_info.get("binary") if isinstance(healthy_info, dict) else None
+                st.subheader(health_title)
+                if healthy_binary is True:
+                    st.success(healthy_msg)
+                elif healthy_binary is False:
+                    st.warning(unhealthy_msg)
+                else:
+                    st.info("The AI returned an uncertain health status. Try another clear photo or seek expert advice.")
+
+                disease_block = health_result.get("disease", {})
+                disease_suggestions = disease_block.get("suggestions", []) if isinstance(disease_block, dict) else []
+                if disease_suggestions:
+                    for item in disease_suggestions[:5]:
+                        disease_name = item.get("name", "Possible plant health issue")
+                        score = float(item.get("probability", 0)) * 100
+                        with st.expander(f"{disease_name} — {score:.1f}% model score"):
+                            details = item.get("details", {}) or {}
+                            description = details.get("description")
+                            treatment = details.get("treatment")
+                            if description:
+                                st.write(description)
+                            if treatment:
+                                st.markdown("**Suggested next steps / பரிந்துரைக்கப்படும் நடவடிக்கைகள்**")
+                                st.write(treatment)
+                            if not description and not treatment:
+                                st.write("Detailed guidance was not returned for this suggestion. Confirm the diagnosis locally before treatment.")
+                else:
+                    st.write(no_disease_msg)
+                st.caption("Model scores are not guarantees. Similar symptoms can have different causes, including pests, nutrition, watering, weather, or disease.")
+                st.caption("Privacy note: the uploaded image is sent to the configured plant-analysis provider to process this request.")
+            except requests.HTTPError as exc:
+                response = getattr(exc, "response", None)
+                status = response.status_code if response is not None else "unknown"
+                if status in (401, 403):
+                    st.error("The plant-analysis API key was rejected or lacks access. Check your key and plan in the provider dashboard.")
+                elif status == 429:
+                    st.error("The provider usage limit may have been reached. Check your API quota or billing plan.")
+                else:
+                    st.error(f"Plant analysis request failed (HTTP {status}). Check the API access and try again.")
+            except requests.RequestException as exc:
+                st.error(f"Could not connect to the plant-analysis service: {exc}")
+            except (ValueError, TypeError, KeyError) as exc:
+                st.error(f"The provider returned an unexpected response. Please try another image. Details: {exc}")
+
+    st.caption("Broad coverage is the goal, not a promise of perfect detection for every crop, plant, tree, disease, or region. Provider availability, supported conditions, and usage charges may change.")
+
+# =========================================================
+# ABOUT
+# =========================================================
+with about_tab:
+    hero_banner(
+        "🌳 " + tr("about_tab"),
+        "A growing guide for crops, plants, gardens and trees / பயிர்கள், செடிகள், தோட்டங்கள் மற்றும் மரங்களுக்கான வழிகாட்டி",
+        "https://images.unsplash.com/photo-1441974231531-c6227db76b6e?auto=format&fit=crop&w=1800&q=85",
+    )
+    st.header(tr("about_heading"))
+    st.write(tr("about_description"))
+    st.subheader(tr("features"))
+
+    for key in [
+        "feature1",
+        "feature2",
+        "feature3",
+        "feature4",
+        "feature5",
+    ]:
+        st.markdown(f"- {tr(key)}")
+
+    st.subheader(tr("technology"))
+    st.markdown(
+        "- Python\n"
+        "- Streamlit\n"
+        "- Pandas and NumPy\n"
+        "- Scikit-learn\n"
+        "- Joblib\n"
+        "- OpenWeatherMap API\n"
+        "- Kindwise Plant.id API (optional plant identification and health assessment)"
+    )
+    st.warning(tr("limitation"))
+
+st.divider()
+st.caption(tr("footer"))
