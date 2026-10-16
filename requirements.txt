@@ -6,3 +6,6 @@ plotly
 joblib
 requests
 python-dotenv
+groq
+torch
+torchvision
