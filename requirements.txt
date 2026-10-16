@@ -9,3 +9,4 @@ python-dotenv
 groq
 torch
 torchvision
+huggingface_hub
